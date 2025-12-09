@@ -3,6 +3,8 @@ from ultralytics import YOLO
 import numpy as np
 import cv2
 from PIL import Image
+import pyttsx3
+import os
 
 # ----------------- CONFIG -----------------
 st.set_page_config(
@@ -11,14 +13,32 @@ st.set_page_config(
     layout="centered"
 )
 
-MODEL_PATH = "best.pt"   # your trained YOLO model
+MODEL_PATH = os.path.join("models", "best.pt")  # your trained YOLO model
 
-# ----------------- UTILS -----------------
+# ----------------- TTS (Audio) -----------------
+@st.cache_resource
+def init_tts():
+    engine = pyttsx3.init()
+    engine.setProperty("rate", 170)  # speech speed
+    return engine
+
+def speak(text: str):
+    """Speak text using pyttsx3 (runs locally)."""
+    try:
+        engine = init_tts()
+        engine.say(text)
+        engine.runAndWait()
+    except Exception as e:
+        # Don't crash app if TTS fails
+        st.warning(f"TTS error: {e}")
+
+# ----------------- MODEL LOADING -----------------
 @st.cache_resource
 def load_model(path):
     """Load YOLO model once and cache."""
     return YOLO(path)
 
+# ----------------- COLOR & FILTER UTILS -----------------
 def get_color_name_from_roi(roi_bgr: np.ndarray) -> str:
     """Return a simple color name from a BGR ROI."""
     if roi_bgr.size == 0:
@@ -29,7 +49,7 @@ def get_color_name_from_roi(roi_bgr: np.ndarray) -> str:
     s_mean = hsv[:, :, 1].mean()
     v_mean = hsv[:, :, 2].mean()
 
-    # very simple rules – tune for your dataset
+    # very simple rules – tune thresholds based on your experiments
     if v_mean < 50:
         return "Black"
     if s_mean < 40:
@@ -56,23 +76,20 @@ def get_color_name_from_roi(roi_bgr: np.ndarray) -> str:
 def apply_cvd_filter_bgr(frame_bgr: np.ndarray, cvd_type: str) -> np.ndarray:
     """
     Very simple color transform to mimic correction for different CVD types.
-    This is just for demo visuals – you can replace with your real algorithm.
+    Replace with your own algorithm if you have a better one.
     """
     frame = frame_bgr.astype(np.float32) / 255.0
     B, G, R = cv2.split(frame)
 
     if cvd_type == "Protanopia":
-        # reduce red, boost green/blue
         R_corr = 0.3 * R + 0.7 * G
         G_corr = 0.6 * G + 0.4 * B
         B_corr = B
     elif cvd_type == "Deuteranopia":
-        # reduce green
         R_corr = R
         G_corr = 0.3 * G + 0.7 * R
         B_corr = 0.8 * B + 0.2 * G
     elif cvd_type == "Tritanopia":
-        # reduce blue
         R_corr = 0.8 * R + 0.2 * B
         G_corr = G
         B_corr = 0.3 * B + 0.7 * G
@@ -88,17 +105,20 @@ def apply_cvd_filter_bgr(frame_bgr: np.ndarray, cvd_type: str) -> np.ndarray:
     return corrected
 
 def detect_and_draw(image_pil: Image.Image, model, cvd_type: str):
-    """Run YOLO, draw boxes + color labels, and return 2 images:
-       original_with_boxes, filtered_with_boxes
+    """
+    Run YOLO, draw boxes + color labels, and return:
+    - original_with_boxes (PIL)
+    - filtered_with_boxes (PIL)
+    - spoken_summary (string for TTS / logging)
     """
     img_bgr = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
 
-    # YOLO inference (BGR or RGB both OK, but we convert to RGB for model)
     results = model(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB), imgsz=640, conf=0.5)
 
-    # Copy for drawing
     vis_orig = img_bgr.copy()
     vis_filtered = apply_cvd_filter_bgr(img_bgr.copy(), cvd_type)
+
+    detections_for_speech = []
 
     for r in results:
         boxes = r.boxes.xyxy.cpu().numpy().astype(int)
@@ -106,32 +126,33 @@ def detect_and_draw(image_pil: Image.Image, model, cvd_type: str):
 
         for box, cls_id in zip(boxes, cls_ids):
             x1, y1, x2, y2 = box
-            # Clip coordinates
             h, w, _ = img_bgr.shape
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(w - 1, x2), min(h - 1, y2)
 
             roi = img_bgr[y1:y2, x1:x2]
             color_name = get_color_name_from_roi(roi)
-            class_name = model.names[int(cls_id)] if hasattr(model, "names") else "obj"
+            class_name = model.names[int(cls_id)] if hasattr(model, "names") else "object"
             label = f"{class_name} | {color_name}"
 
-            # Draw on original view
+            detections_for_speech.append(label)
+
+            # original
             cv2.rectangle(vis_orig, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(vis_orig, label, (x1, y1 - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-            # Draw on filtered view (same box)
+            # filtered
             cv2.rectangle(vis_filtered, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(vis_filtered, label, (x1, y1 - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-    # Convert back to PIL for Streamlit
+    summary_text = ". ".join(detections_for_speech) if detections_for_speech else "No objects detected."
     orig_pil = Image.fromarray(cv2.cvtColor(vis_orig, cv2.COLOR_BGR2RGB))
     filt_pil = Image.fromarray(cv2.cvtColor(vis_filtered, cv2.COLOR_BGR2RGB))
-    return orig_pil, filt_pil
+    return orig_pil, filt_pil, summary_text
 
-# ----------------- STATE -----------------
+# ----------------- SESSION STATE -----------------
 if "page" not in st.session_state:
     st.session_state.page = "welcome"
 if "user_name" not in st.session_state:
@@ -141,11 +162,13 @@ if "cvd_type" not in st.session_state:
 if "saved_pref" not in st.session_state:
     st.session_state.saved_pref = False
 
-# ----------------- PAGES -----------------
+# ----------------- PAGE FUNCTIONS -----------------
 def page_welcome():
     st.markdown("<h1 style='text-align:center;'>VisionAssist</h1>", unsafe_allow_html=True)
-    st.write("A computer vision & ML-based tool to enhance color perception "
-             "for color-blind individuals with multisensory feedback.")
+    st.write(
+        "A computer vision & machine learning based application for "
+        "enhancing color perception in color-blind individuals with multisensory feedback."
+    )
 
     name = st.text_input("Write your name:")
     if st.button("Enter"):
@@ -155,21 +178,20 @@ def page_welcome():
 def page_onboarding():
     st.markdown(f"### Welcome {st.session_state.user_name} 👋")
     st.write(
-        "VisionAssist helps you identify objects and understand their colors.\n\n"
-        "You can choose your color-vision type and capture an image to see:\n"
-        "- Detected objects\n"
-        "- Color labels\n"
-        "- A filtered view adjusted for your color vision."
+        "- Step 1: Select your color vision type.\n"
+        "- Step 2: Capture an image using the camera.\n"
+        "- Step 3: See detected objects, color labels, and filtered image.\n"
+        "- Step 4: Listen to audio feedback (optional)."
     )
     if st.button("Get Started"):
         st.session_state.page = "cvd_select"
 
 def page_cvd_select():
-    st.markdown("### Select Your Color Vision Type")
+    st.markdown("### Select CVD Type")
     cvd = st.selectbox(
-        "Select CVD Type:",
+        "Color Vision Deficiency:",
         ["Protanopia", "Deuteranopia", "Tritanopia"],
-        index=["Protanopia", "Deuteranopia", "Tritanopia"].index(st.session_state.cvd_type)
+        index=["Protanopia", "Deuteranopia", "Tritanopia"].index(st.session_state.cvd_type),
     )
     st.session_state.cvd_type = cvd
 
@@ -181,7 +203,7 @@ def page_cvd_select():
             st.session_state.saved_pref = True
             st.success(f"Preference saved: {cvd}")
     with col2:
-        if st.button("Open Live Camera"):
+        if st.button("Open Camera"):
             st.session_state.page = "camera"
 
     if st.button("⬅ Back"):
@@ -189,33 +211,36 @@ def page_cvd_select():
 
 def page_camera(model):
     st.markdown(f"### Live Camera – Mode: {st.session_state.cvd_type}")
-    st.write("Capture an image (simulating the live camera view).")
+    st.write("Capture an image (simulating the live camera view of VisionAssist).")
 
-    img_data = st.camera_input("Tap **Take Photo**")
+    img_data = st.camera_input("Tap **Take Photo** to capture")
 
     if img_data is not None:
         image = Image.open(img_data)
-
-        if st.button("Run Detection"):
-            with st.spinner("Running YOLO detection and color analysis..."):
-                orig, filt = detect_and_draw(image, model, st.session_state.cvd_type)
+        if st.button("Run Detection & Color Analysis"):
+            with st.spinner("Running YOLO detection..."):
+                orig, filt, summary_text = detect_and_draw(image, model, st.session_state.cvd_type)
 
             st.markdown("#### Real-Time Detected View")
-            st.image(orig, caption="Detected objects with color labels", use_column_width=True)
+            st.image(orig, caption="Objects with color labels", use_column_width=True)
 
-            st.markdown("#### Filtered Image (CVD-adjusted)")
+            st.markdown("#### Filtered Image (CVD Adjusted)")
             st.image(filt, caption=f"Filtered view for {st.session_state.cvd_type}", use_column_width=True)
 
-            st.success("Detection complete. (Here you can also trigger audio feedback in your full system.)")
+            st.success("Detection complete.")
+            st.write("**Summary:**", summary_text)
+
+            if st.button("🔊 Play Audio Description"):
+                speak(summary_text)
 
     if st.button("⬅ Back to CVD Selection"):
         st.session_state.page = "cvd_select"
 
 # ----------------- MAIN ROUTER -----------------
 def main():
-    # show a subtle header like in your mockup
     st.sidebar.markdown("## VisionAssist")
     st.sidebar.write("Navigation")
+
     if st.sidebar.button("Welcome"):
         st.session_state.page = "welcome"
     if st.sidebar.button("CVD Selection"):
@@ -223,7 +248,7 @@ def main():
     if st.sidebar.button("Camera"):
         st.session_state.page = "camera"
 
-    # lazy-load model only when needed
+    # load model only when needed
     model = None
     if st.session_state.page in ["camera"]:
         model = load_model(MODEL_PATH)
