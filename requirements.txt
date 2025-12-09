@@ -1,9 +1,9 @@
-streamlit
-ultralytics
-opencv-python
-pillow 
-numpy
+streamlit==1.36.0
+ultralytics==8.1.9
+opencv-python==4.9.0
+Pillow==10.2.0
+numpy==1.26.4
+pyttsx3==2.90
 torch
 opencv-python-headless
 python-multipart[optional]
-pyttsx3
