@@ -6,3 +6,4 @@ numpy
 torch
 opencv-python-headless
 python-multipart[optional]
+pyttsx3
