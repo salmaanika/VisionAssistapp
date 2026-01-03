@@ -1,4 +1,5 @@
 streamlit
+streamlit-webrtc
 ultralytics
 opencv-python
 Pillow
@@ -7,5 +8,4 @@ pyttsx3
 torch
 opencv-python-headless
 python-multipart[optional]
-streamlit-webrtc
 av
