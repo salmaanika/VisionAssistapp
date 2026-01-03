@@ -6,6 +6,4 @@ Pillow
 numpy
 pyttsx3
 torch
-opencv-python-headless
 python-multipart[optional]
-av
