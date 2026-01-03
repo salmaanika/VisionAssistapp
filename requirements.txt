@@ -1,9 +1,9 @@
 streamlit
 streamlit-webrtc
 ultralytics
-opencv-python
+opencv-python-headless
 Pillow
 numpy
 pyttsx3
-torch
+torchvision
 python-multipart[optional]
