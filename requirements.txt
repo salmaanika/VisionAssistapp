@@ -7,3 +7,5 @@ pyttsx3
 torch
 opencv-python-headless
 python-multipart[optional]
+streamlit-webrtc
+av
