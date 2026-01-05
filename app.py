@@ -218,8 +218,8 @@ with c2:
 with st.spinner("Running YOLO inference..."):
     results = model.predict(source=raw_rgb, conf=conf_threshold, iou=iou_threshold, verbose=False)
 
-annotated_bgr = results[0].plot()
-annotated_rgb = annotated_bgr[..., ::-1]
+annotated_pil = results[0].plot(pil=True)   # always RGB
+annotated_rgb = np.array(annotated_pil)
 
 # detections JSON
 detections = []
