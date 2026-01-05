@@ -62,28 +62,48 @@ def make_tts_mp3(text: str) -> bytes | None:
 # -----------------------------
 def dominant_color_from_rgb(raw_rgb: np.ndarray) -> tuple[str, tuple[int, int, int]]:
     """
-    Dominant color detection using ONLY RGB averages.
-    No HSV. No conversion.
+    Simple color naming using ONLY RGB (no HSV).
+    Detects: Red, Green, Blue, Yellow, Cyan, Magenta, White, Black, Gray, Mixed
     """
     avg = raw_rgb.reshape(-1, 3).mean(axis=0)
-    r, g, b = [int(x) for x in avg]
+    r, g, b = [float(x) for x in avg]
 
-    if r > g and r > b:
-        name = "Red"
-    elif g > r and g > b:
-        name = "Green"
-    elif b > r and b > g:
-        name = "Blue"
-    elif abs(r - g) < 15 and abs(r - b) < 15:
-        name = "Gray"
+    # brightness
+    v = (r + g + b) / 3.0
+    mx = max(r, g, b)
+    mn = min(r, g, b)
+
+    # near gray (low chroma)
+    if (mx - mn) < 18:
+        if v < 50:
+            name = "Black"
+        elif v > 210:
+            name = "White"
+        else:
+            name = "Gray"
+        return name, (int(r), int(g), int(b))
+
+    # detect secondary colors by "two channels high, one low"
+    # tweak thresholds if needed
+    high = 160
+    low = 120
+
+    if r > high and g > high and b < low:
+        name = "Yellow"
+    elif g > high and b > high and r < low:
+        name = "Cyan"
+    elif r > high and b > high and g < low:
+        name = "Magenta"
     else:
-        name = "Mixed"
+        # primary channel dominance
+        if r >= g and r >= b:
+            name = "Red"
+        elif g >= r and g >= b:
+            name = "Green"
+        else:
+            name = "Blue"
 
-    return name, (r, g, b)
-
-
-def swatch_image(rgb: tuple[int, int, int], size=70) -> Image.Image:
-    return Image.new("RGB", (size, size), rgb)
+    return name, (int(r), int(g), int(b))
 
 
 # -----------------------------
