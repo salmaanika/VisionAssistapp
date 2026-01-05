@@ -233,17 +233,3 @@ if st.session_state.play_audio:
 
 st.json(detections)
 
-st.subheader("Download")
-st.download_button(
-    label="Download displayed image (PNG)",
-    data=pil_to_bytes(Image.fromarray(display_rgb), fmt="PNG"),
-    file_name=f"result_{Path(image_name).stem}.png",
-    mime="image/png",
-)
-
-st.download_button(
-    label="Download detections (TXT/JSON-like)",
-    data=str(detections).encode("utf-8"),
-    file_name=f"detections_{Path(image_name).stem}.txt",
-    mime="text/plain",
-)
