@@ -7,7 +7,7 @@ from PIL import Image
 from ultralytics import YOLO
 import cv2  # pip install opencv-python-headless
 
-APP_TITLE = "VisionAssist - YOLO + CVD + Raw Color"
+APP_TITLE = "VisionAssist - YOLO + CVD Filter Toggle + Raw Color"
 MODEL_PATH = "best.pt"
 ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
@@ -123,57 +123,61 @@ def swatch_image(rgb_tuple: tuple[int, int, int], size=70) -> Image.Image:
 
 
 # -----------------------------
-# CVD Simulation (AFFECTS ONLY DISPLAY)
+# CVD Filter (LMS "missing cone" simulation)
+# Applies ONLY when user presses Filter button (for DISPLAY).
 # -----------------------------
-CVD_MATRICES = {
-    "None": np.array([[1.0, 0.0, 0.0],
-                      [0.0, 1.0, 0.0],
-                      [0.0, 0.0, 1.0]], dtype=np.float32),
-    "Protanopia": np.array([[0.56667, 0.43333, 0.00000],
-                            [0.55833, 0.44167, 0.00000],
-                            [0.00000, 0.24167, 0.75833]], dtype=np.float32),
-    "Deuteranopia": np.array([[0.62500, 0.37500, 0.00000],
-                              [0.70000, 0.30000, 0.00000],
-                              [0.00000, 0.30000, 0.70000]], dtype=np.float32),
-    "Tritanopia": np.array([[0.95000, 0.05000, 0.00000],
-                            [0.00000, 0.43333, 0.56667],
-                            [0.00000, 0.47500, 0.52500]], dtype=np.float32),
+RGB_TO_LMS = np.array([
+    [0.31399022, 0.63951294, 0.04649755],
+    [0.15537241, 0.75789446, 0.08670142],
+    [0.01775239, 0.10944209, 0.87256922],
+], dtype=np.float32)
+LMS_TO_RGB = np.linalg.inv(RGB_TO_LMS).astype(np.float32)
+
+LMS_MISSING_CONE = {
+    "None": np.eye(3, dtype=np.float32),
+
+    # Protanopia: missing L -> approximate L from M (simple model)
+    "Protanopia": np.array([
+        [0.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ], dtype=np.float32),
+
+    # Deuteranopia: missing M -> approximate M from L (simple model)
+    "Deuteranopia": np.array([
+        [1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ], dtype=np.float32),
+
+    # Tritanopia: missing S -> approximate S from M (simple model)
+    "Tritanopia": np.array([
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ], dtype=np.float32),
 }
 
 
-def apply_cvd_simulation(rgb: np.ndarray, cvd_type: str) -> np.ndarray:
-    M = CVD_MATRICES.get(cvd_type, CVD_MATRICES["None"])
-    x = rgb.astype(np.float32) / 255.0
-    y = x @ M.T
-    y = np.clip(y, 0.0, 1.0)
-    return (y * 255.0).astype(np.uint8)
+def apply_cvd_lms_missing_cone(rgb: np.ndarray, cvd_type: str) -> np.ndarray:
+    """
+    Apply LMS missing-cone simulation to an RGB uint8 image.
+    """
+    M = LMS_MISSING_CONE.get(cvd_type, LMS_MISSING_CONE["None"])
 
+    x = rgb.astype(np.float32) / 255.0  # (H,W,3) in [0,1]
 
-# -----------------------------
-# Filter (OPTIONAL) - ONLY ON ANNOTATED OUTPUT
-# -----------------------------
-def apply_filter_to_rgb(rgb: np.ndarray, mode: str,
-                        h_min=0, s_min=0, v_min=0,
-                        h_max=179, s_max=255, v_max=255) -> np.ndarray:
-    if mode == "none":
-        return rgb
+    # RGB -> LMS
+    lms = x @ RGB_TO_LMS.T
 
-    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    # Deficiency in LMS
+    lms2 = lms @ M.T
 
-    if mode == "grayscale":
-        g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-        out = cv2.cvtColor(g, cv2.COLOR_GRAY2BGR)
-        return cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
+    # LMS -> RGB
+    rgb2 = lms2 @ LMS_TO_RGB.T
+    rgb2 = np.clip(rgb2, 0.0, 1.0)
 
-    if mode == "hsv_range":
-        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-        lower = np.array([h_min, s_min, v_min], dtype=np.uint8)
-        upper = np.array([h_max, s_max, v_max], dtype=np.uint8)
-        mask = cv2.inRange(hsv, lower, upper)
-        filtered = cv2.bitwise_and(bgr, bgr, mask=mask)
-        return cv2.cvtColor(filtered, cv2.COLOR_BGR2RGB)
-
-    return rgb
+    return (rgb2 * 255.0).astype(np.uint8)
 
 
 # -----------------------------
@@ -183,22 +187,19 @@ st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title(APP_TITLE)
 
 # session defaults
-st.session_state.setdefault("show_filter", False)
+st.session_state.setdefault("apply_cvd_filter", False)  # Filter button toggles this
 st.session_state.setdefault("play_audio", False)
-st.session_state.setdefault("filter_mode", "none")
-st.session_state.setdefault("h_min", 0)
-st.session_state.setdefault("s_min", 0)
-st.session_state.setdefault("v_min", 0)
-st.session_state.setdefault("h_max", 179)
-st.session_state.setdefault("s_max", 255)
-st.session_state.setdefault("v_max", 255)
 
 with st.sidebar:
     st.header("Input Source")
     source = st.radio("Choose input", ["Upload Image", "Live Camera"], index=0)
 
-    st.header("CVD Selection (Display only)")
-    cvd_type = st.selectbox("Select CVD type", ["None", "Protanopia", "Deuteranopia", "Tritanopia"], index=0)
+    st.header("CVD Type (applies ONLY when Filter is ON)")
+    cvd_type = st.selectbox(
+        "Select CVD type",
+        ["None", "Protanopia", "Deuteranopia", "Tritanopia"],
+        index=0
+    )
 
     st.header("Detection Settings")
     conf_threshold = st.slider("Confidence threshold", 0.0, 1.0, 0.25, 0.01)
@@ -238,10 +239,10 @@ else:
 # RAW image array (used for YOLO + raw color detection)
 raw_rgb = np.array(image_pil)
 
-# ✅ Raw color detection ALWAYS from raw_rgb only
+# ✅ Raw color detection ALWAYS from raw_rgb only (never filtered)
 color_name, avg_rgb = dominant_color_name_from_rgb(raw_rgb)
 
-st.subheader("Raw Image Color Detection (Original image - no filter, no CVD)")
+st.subheader("Raw Image Color Detection (Original image - ALWAYS raw)")
 c1, c2 = st.columns([1, 4])
 with c1:
     st.image(swatch_image(avg_rgb), caption=color_name, width=80)
@@ -274,66 +275,42 @@ for b in results[0].boxes:
         "class_name": model.names.get(cls, str(cls)),
     })
 
-# Display: apply CVD to ORIGINAL and RESULT
-display_original_rgb = apply_cvd_simulation(raw_rgb, cvd_type)
+# Precompute filtered images (CVD versions) for the 3rd column
+filtered_original_rgb = raw_rgb
+filtered_result_rgb = annotated_rgb
+if cvd_type != "None":
+    filtered_original_rgb = apply_cvd_lms_missing_cone(raw_rgb, cvd_type)
+    filtered_result_rgb = apply_cvd_lms_missing_cone(annotated_rgb, cvd_type)
 
-# Display result pipeline: annotated -> optional filter -> CVD
-display_result_rgb = annotated_rgb
-if st.session_state.show_filter:
-    display_result_rgb = apply_filter_to_rgb(
-        display_result_rgb,
-        st.session_state.filter_mode,
-        st.session_state.h_min,
-        st.session_state.s_min,
-        st.session_state.v_min,
-        st.session_state.h_max,
-        st.session_state.s_max,
-        st.session_state.v_max,
-    )
-display_result_rgb = apply_cvd_simulation(display_result_rgb, cvd_type)
+# -----------------------------
+# DISPLAY: 3 columns
+# - col1: raw original
+# - col2: raw annotated
+# - col3: filtered (two stacked images) only when Filter ON
+# -----------------------------
+col1, col2, col3 = st.columns(3, gap="large")
 
-# Two columns
-colL, colR = st.columns(2, gap="large")
+with col1:
+    st.subheader("Original (RAW)")
+    st.image(Image.fromarray(raw_rgb), use_container_width=True)
 
-with colL:
-    st.subheader("Original (CVD view)")
-    st.image(Image.fromarray(display_original_rgb), use_container_width=True)
+with col2:
+    st.subheader("Result (Annotated - RAW)")
+    st.image(Image.fromarray(annotated_rgb), use_container_width=True)
 
-with colR:
-    st.subheader("Result (Annotated - CVD view)")
-    st.image(Image.fromarray(display_result_rgb), use_container_width=True)
-
+    # Buttons under column 2 (like your screenshot layout)
     bA, bB = st.columns(2)
     with bA:
         if st.button("Filter", key="btn_filter", use_container_width=True):
-            st.session_state.show_filter = not st.session_state.show_filter
+            st.session_state.apply_cvd_filter = not st.session_state.apply_cvd_filter
             st.session_state.play_audio = False
             st.rerun()
     with bB:
         if st.button("Audio", key="btn_audio", use_container_width=True):
             st.session_state.play_audio = not st.session_state.play_audio
-            st.session_state.show_filter = False
+            # optional: turn off filter when audio is on
+            st.session_state.apply_cvd_filter = False
             st.rerun()
-
-    if st.session_state.show_filter:
-        st.markdown("### Filter Options (Annotated only)")
-        st.session_state.filter_mode = st.selectbox(
-            "Filter mode",
-            ["none", "grayscale", "hsv_range"],
-            index=["none", "grayscale", "hsv_range"].index(st.session_state.filter_mode),
-            key="filter_mode_select",
-        )
-        if st.session_state.filter_mode == "hsv_range":
-            f1, f2, f3 = st.columns(3)
-            with f1:
-                st.session_state.h_min = st.slider("H min", 0, 179, st.session_state.h_min, key="hmin")
-                st.session_state.h_max = st.slider("H max", 0, 179, st.session_state.h_max, key="hmax")
-            with f2:
-                st.session_state.s_min = st.slider("S min", 0, 255, st.session_state.s_min, key="smin")
-                st.session_state.s_max = st.slider("S max", 0, 255, st.session_state.s_max, key="smax")
-            with f3:
-                st.session_state.v_min = st.slider("V min", 0, 255, st.session_state.v_min, key="vmin")
-                st.session_state.v_max = st.slider("V max", 0, 255, st.session_state.v_max, key="vmax")
 
     if st.session_state.play_audio:
         st.markdown("### Audio")
@@ -345,13 +322,31 @@ with colR:
         else:
             st.audio(mp3, format="audio/mp3")
 
+with col3:
+    st.subheader("Filtered View (CVD)")
+
+    if st.session_state.apply_cvd_filter and cvd_type != "None":
+        st.caption(f"Filtered Original ({cvd_type})")
+        st.image(Image.fromarray(filtered_original_rgb), use_container_width=True)
+
+        st.caption(f"Filtered Annotated ({cvd_type})")
+        st.image(Image.fromarray(filtered_result_rgb), use_container_width=True)
+    elif st.session_state.apply_cvd_filter and cvd_type == "None":
+        st.info("Filter is ON, but CVD type is **None**. Choose Protanopia/Deuteranopia/Tritanopia.")
+    else:
+        st.info("Press **Filter** to show the filtered images here.")
+
 st.subheader("Detections (JSON)")
 st.json(detections)
 
 st.subheader("Download")
+
+# Download what is being shown in the filtered panel if Filter ON, else download raw annotated
+download_rgb = filtered_result_rgb if (st.session_state.apply_cvd_filter and cvd_type != "None") else annotated_rgb
+
 st.download_button(
-    label="Download result image (PNG)",
-    data=pil_to_bytes(Image.fromarray(display_result_rgb), fmt="PNG"),
+    label="Download displayed result image (PNG)",
+    data=pil_to_bytes(Image.fromarray(download_rgb), fmt="PNG"),
     file_name=f"result_{Path(image_name).stem}.png",
     mime="image/png",
 )
