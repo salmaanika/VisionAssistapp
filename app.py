@@ -1,3 +1,4 @@
+# app.py
 import io
 from pathlib import Path
 
@@ -5,7 +6,7 @@ import numpy as np
 import streamlit as st
 from PIL import Image
 from ultralytics import YOLO
-import cv2  # used ONLY for HSV in dominant color; no BGR conversion anywhere
+import cv2  # used ONLY for RGB->HSV in dominant color; no BGR usage
 
 APP_TITLE = "VisionAssist - YOLO + CVD Filter Panel + Raw Color (RGB only)"
 MODEL_PATH = "best.pt"
@@ -185,7 +186,7 @@ with st.sidebar:
     st.header("Input Source")
     source = st.radio("Choose input", ["Upload Image", "Live Camera"], index=0)
 
-    st.header("CVD Selection (used only when Filter is ON)")
+    st.header("CVD Type (used when Filter is ON)")
     cvd_type = st.selectbox(
         "Select CVD type",
         ["None", "Protanopia", "Deuteranopia", "Tritanopia"],
@@ -203,7 +204,7 @@ except Exception as e:
     st.error(str(e))
     st.stop()
 
-# Input image
+# Input image (PIL RGB)
 image_pil = None
 image_name = "camera.png"
 
@@ -227,7 +228,7 @@ else:
         st.stop()
     image_pil = Image.open(cam).convert("RGB")
 
-# RAW image array (RGB)
+# RAW image array (RGB) for your own processing
 raw_rgb = np.array(image_pil)
 
 # ✅ Raw color detection ALWAYS from raw_rgb (never filtered)
@@ -241,17 +242,17 @@ with c2:
     st.write(f"**Dominant Color:** {color_name}")
     st.write(f"**Average RGB:** {avg_rgb}")
 
-# YOLO inference uses RAW RGB
+# ✅ YOLO inference: pass PIL image (RGB) so Ultralytics doesn't assume BGR
 with st.spinner("Running YOLO inference..."):
     results = model.predict(
-        source=raw_rgb,
+        source=image_pil,           # IMPORTANT: PIL RGB input
         conf=conf_threshold,
         iou=iou_threshold,
         verbose=False,
     )
 
-# ✅ IMPORTANT: Annotated image in RGB only (NO BGR, NO channel flipping)
-annotated_pil = results[0].plot(pil=True)  # PIL is RGB
+# ✅ Annotated image: request PIL output (RGB)
+annotated_pil = results[0].plot(pil=True)
 annotated_rgb = np.array(annotated_pil)
 
 # Detections JSON
@@ -314,13 +315,13 @@ with col2:
 
 with col3:
     st.subheader("Filtered Images (CVD)")
-
     if st.session_state.apply_cvd_filter and cvd_type != "None":
         st.caption(f"Filtered Original ({cvd_type})")
         st.image(Image.fromarray(filtered_original_rgb), use_container_width=True)
 
         st.caption(f"Filtered Annotated ({cvd_type})")
         st.image(Image.fromarray(filtered_annotated_rgb), use_container_width=True)
+
     elif st.session_state.apply_cvd_filter and cvd_type == "None":
         st.info("Filter is ON, but CVD type is **None**. Choose Protanopia/Deuteranopia/Tritanopia.")
     else:
