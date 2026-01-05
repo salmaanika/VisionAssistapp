@@ -3,7 +3,7 @@ ultralytics
 opencv-python-headless
 Pillow
 numpy
-pyttsx3
+gTTS
 torch
 torchvision
 python-multipart[optional]
