@@ -1,5 +1,7 @@
 # app.py
 import io
+import json
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -62,9 +64,6 @@ def swatch_image(rgb: tuple[int, int, int], size: int = 70) -> Image.Image:
     return Image.new("RGB", (size, size), rgb)
 
 
-# -----------------------------
-# RAW COLOR DETECTION (RGB only, no HSV)
-# -----------------------------
 def dominant_color_from_rgb(raw_rgb: np.ndarray) -> tuple[str, tuple[int, int, int]]:
     """
     Simple color naming using ONLY RGB (no HSV).
@@ -73,12 +72,10 @@ def dominant_color_from_rgb(raw_rgb: np.ndarray) -> tuple[str, tuple[int, int, i
     avg = raw_rgb.reshape(-1, 3).mean(axis=0)
     r, g, b = [float(x) for x in avg]
 
-    # brightness
     v = (r + g + b) / 3.0
     mx = max(r, g, b)
     mn = min(r, g, b)
 
-    # gray / black / white if low chroma
     if (mx - mn) < 18:
         if v < 50:
             name = "Black"
@@ -88,9 +85,8 @@ def dominant_color_from_rgb(raw_rgb: np.ndarray) -> tuple[str, tuple[int, int, i
             name = "Gray"
         return name, (int(r), int(g), int(b))
 
-    # secondary colors (tune thresholds if needed)
     high = 160
-    low = 190  # higher to catch "yellow-ish" bananas etc.
+    low = 190  # loosened to catch yellow-ish objects
 
     if r > high and g > high and b < low:
         name = "Yellow"
@@ -99,7 +95,6 @@ def dominant_color_from_rgb(raw_rgb: np.ndarray) -> tuple[str, tuple[int, int, i
     elif r > high and b > high and g < low:
         name = "Magenta"
     else:
-        # primary channel dominance
         if r >= g and r >= b:
             name = "Red"
         elif g >= r and g >= b:
@@ -108,6 +103,33 @@ def dominant_color_from_rgb(raw_rgb: np.ndarray) -> tuple[str, tuple[int, int, i
             name = "Blue"
 
     return name, (int(r), int(g), int(b))
+
+
+def safe_stem(name: str) -> str:
+    """File-name safe stem (no extension)."""
+    stem = Path(name).stem if name else "image"
+    stem = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in stem)
+    return stem or "image"
+
+
+def cvd_suffix(cvd_type: str) -> str:
+    return "raw" if cvd_type == "None" else cvd_type.lower()
+
+
+def detections_as_pretty_json_bytes(detections: list[dict]) -> bytes:
+    return (json.dumps(detections, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def make_zip_bytes(files: list[tuple[str, bytes]]) -> bytes:
+    """
+    files: list of (filename_inside_zip, bytes)
+    returns zip bytes
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for fname, data in files:
+            zf.writestr(fname, data)
+    return buf.getvalue()
 
 
 # -----------------------------
@@ -184,6 +206,8 @@ else:
     image_name = "camera.png"
     image_pil = Image.open(cam).convert("RGB")
 
+base = safe_stem(image_name)
+
 # Raw RGB array for our own processing
 raw_rgb = np.array(image_pil)
 
@@ -222,12 +246,6 @@ for b in results[0].boxes:
 # -----------------------------
 filtered_original = apply_cvd(raw_rgb, cvd_type) if cvd_type != "None" else raw_rgb
 filtered_annotated = apply_cvd(annotated_rgb, cvd_type) if cvd_type != "None" else annotated_rgb
-
-# What to download as "displayed image"
-if st.session_state.apply_cvd and cvd_type != "None":
-    display_rgb = filtered_annotated
-else:
-    display_rgb = annotated_rgb
 
 # -----------------------------
 # DISPLAY (3 columns)
@@ -282,20 +300,84 @@ st.subheader("Detections (JSON)")
 st.json(detections)
 
 # -----------------------------
-# Download buttons
+# Download section
 # -----------------------------
 st.subheader("Download")
 
+# Auto naming based on CVD type (for filtered filenames)
+suffix = cvd_suffix(cvd_type)
+
+# RAW downloads
+raw_img_name = f"{base}_annotated_raw.png"
+raw_json_name = f"{base}_detections.json"
+
+# FILTERED downloads (if cvd_type == None, still produces *_raw names)
+filtered_img_name = f"{base}_annotated_{suffix}.png"
+filtered_json_name = f"{base}_detections_{suffix}.json"
+
+# Separate download buttons: RAW
+st.markdown("#### Download RAW")
 st.download_button(
-    label="Download displayed image (PNG)",
-    data=pil_to_bytes(Image.fromarray(display_rgb), fmt="PNG"),
-    file_name=f"result_{Path(image_name).stem}.png",
+    label="Download RAW annotated image (PNG)",
+    data=pil_to_bytes(Image.fromarray(annotated_rgb), fmt="PNG"),
+    file_name=raw_img_name,
     mime="image/png",
 )
 
 st.download_button(
-    label="Download detections (TXT/JSON-like)",
-    data=str(detections).encode("utf-8"),
-    file_name=f"detections_{Path(image_name).stem}.txt",
-    mime="text/plain",
+    label="Download RAW detections (JSON)",
+    data=detections_as_pretty_json_bytes(detections),
+    file_name=raw_json_name,
+    mime="application/json",
 )
+
+# Separate download buttons: FILTERED
+st.markdown("#### Download FILTERED")
+if cvd_type == "None":
+    st.info("Choose a CVD type (Protanopia/Deuteranopia/Tritanopia) to enable filtered downloads.")
+else:
+    st.download_button(
+        label=f"Download FILTERED annotated image (PNG) [{cvd_type}]",
+        data=pil_to_bytes(Image.fromarray(filtered_annotated), fmt="PNG"),
+        file_name=filtered_img_name,
+        mime="image/png",
+    )
+
+    st.download_button(
+        label=f"Download FILTERED detections (JSON) [{cvd_type}]",
+        data=detections_as_pretty_json_bytes(detections),
+        file_name=filtered_json_name,
+        mime="application/json",
+    )
+
+# ZIP downloads: image + JSON together
+st.markdown("#### Download ZIP (Image + JSON)")
+
+# ZIP for RAW
+raw_zip_bytes = make_zip_bytes([
+    (raw_img_name, pil_to_bytes(Image.fromarray(annotated_rgb), fmt="PNG")),
+    (raw_json_name, detections_as_pretty_json_bytes(detections)),
+])
+
+st.download_button(
+    label="Download RAW ZIP (annotated_raw.png + detections.json)",
+    data=raw_zip_bytes,
+    file_name=f"{base}_raw_bundle.zip",
+    mime="application/zip",
+)
+
+# ZIP for FILTERED
+if cvd_type == "None":
+    st.info("Filtered ZIP is disabled because CVD type is None.")
+else:
+    filtered_zip_bytes = make_zip_bytes([
+        (filtered_img_name, pil_to_bytes(Image.fromarray(filtered_annotated), fmt="PNG")),
+        (filtered_json_name, detections_as_pretty_json_bytes(detections)),
+    ])
+
+    st.download_button(
+        label=f"Download FILTERED ZIP ({cvd_type})",
+        data=filtered_zip_bytes,
+        file_name=f"{base}_{suffix}_bundle.zip",
+        mime="application/zip",
+    )
